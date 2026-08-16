@@ -1,0 +1,12 @@
+{
+  "name": "minicloud-sample-app",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A tiny sample application for the MiniCloud learning project",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

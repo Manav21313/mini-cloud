@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MiniCloud Control Plane</title>
+  <style>
+    body { max-width: 800px; margin: 3rem auto; padding: 0 1rem; font: 16px system-ui, sans-serif; color: #172033; }
+    button { margin: 0 .5rem .5rem 0; padding: .65rem 1rem; cursor: pointer; }
+    pre { min-height: 12rem; padding: 1rem; overflow: auto; background: #f1f4f8; border: 1px solid #d8dee8; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>MiniCloud Control Plane</h1>
+  <p>Control the <code>minicloud-sample</code> Docker container.</p>
+  <div>
+    <button data-method="POST" data-path="/deploy">Deploy</button>
+    <button data-method="POST" data-path="/stop">Stop</button>
+    <button data-method="POST" data-path="/restart">Restart</button>
+    <button data-method="GET" data-path="/status">Status</button>
+    <button data-method="GET" data-path="/logs">Logs</button>
+  </div>
+  <pre id="output">Ready.</pre>
+  <script>
+    const output = document.querySelector("#output");
+    document.querySelectorAll("button").forEach((button) => button.addEventListener("click", async () => {
+      output.textContent = "Working...";
+      try {
+        const response = await fetch(button.dataset.path, { method: button.dataset.method });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+        output.textContent = body.logs ?? JSON.stringify(body, null, 2);
+      } catch (error) {
+        output.textContent = `Error: ${error.message}`;
+      }
+    }));
+  </script>
+</body>
+</html>

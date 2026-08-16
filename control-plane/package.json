@@ -1,0 +1,25 @@
+{
+  "name": "minicloud-control-plane",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A TypeScript CLI that controls the MiniCloud sample container",
+  "scripts": {
+    "build": "tsc",
+    "precontrol": "npm run build",
+    "control": "node dist/index.js",
+    "dev": "tsx watch src/server.ts",
+    "preserver": "npm run build",
+    "server": "node dist/server.js",
+    "start": "npm run server"
+  },
+  "dependencies": {
+    "dockerode": "^4.0.7"
+  },
+  "devDependencies": {
+    "@types/dockerode": "^3.3.44",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.23.12",
+    "typescript": "^5.9.3"
+  }
+}
+
