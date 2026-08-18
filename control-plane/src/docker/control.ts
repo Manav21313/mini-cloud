@@ -16,15 +16,28 @@ export interface ContainerStatus {
   error: string | null;
 }
 
+export interface DockerControlOptions {
+  containerName: string;
+  imageName: string;
+  containerPort: number;
+  hostPort: number;
+}
+
 export class DockerControl {
   private readonly docker: Docker;
 
+  private readonly options: DockerControlOptions;
+
   constructor(
-    private readonly containerName = process.env.MINICLOUD_CONTAINER ?? "minicloud-sample",
-    private readonly imageName = process.env.MINICLOUD_IMAGE ?? "minicloud-sample",
-    private readonly hostPort = process.env.MINICLOUD_PORT ?? "3000",
+    options: Partial<DockerControlOptions> = {},
     docker = new Docker()
   ) {
+    this.options = {
+      containerName: options.containerName ?? process.env.MINICLOUD_CONTAINER ?? "minicloud-sample",
+      imageName: options.imageName ?? process.env.MINICLOUD_IMAGE ?? "minicloud-sample",
+      containerPort: options.containerPort ?? 3000,
+      hostPort: options.hostPort ?? Number(process.env.MINICLOUD_PORT ?? "3000")
+    };
     this.docker = docker;
   }
 
@@ -33,12 +46,12 @@ export class DockerControl {
     const details = await container.inspect();
 
     if (details.State.Running) {
-      return { message: `${this.containerName} is already running.`, status: this.toStatus(details) };
+      return { message: `${this.options.containerName} is already running.`, status: this.toStatus(details) };
     }
 
     await container.start();
     return {
-      message: `${this.containerName} started at http://localhost:${this.hostPort}`,
+      message: `${this.options.containerName} started at http://localhost:${this.options.hostPort}`,
       status: await this.status()
     };
   }
@@ -46,23 +59,23 @@ export class DockerControl {
   async stop(): Promise<ActionResult> {
     const container = await this.findContainer();
     if (!container) {
-      return { message: `${this.containerName} does not exist.`, status: this.missingStatus() };
+      return { message: `${this.options.containerName} does not exist.`, status: this.missingStatus() };
     }
 
     const details = await container.inspect();
     if (!details.State.Running) {
-      return { message: `${this.containerName} is already stopped.`, status: this.toStatus(details) };
+      return { message: `${this.options.containerName} is already stopped.`, status: this.toStatus(details) };
     }
 
     await container.stop({ t: 10 });
-    return { message: `${this.containerName} stopped.`, status: await this.status() };
+    return { message: `${this.options.containerName} stopped.`, status: await this.status() };
   }
 
   async restart(): Promise<ActionResult> {
     const container = await this.findContainer();
     if (!container) {
       const result = await this.deploy();
-      return { ...result, message: `${this.containerName} did not exist; it was created and started.` };
+      return { ...result, message: `${this.options.containerName} did not exist; it was created and started.` };
     }
 
     const details = await container.inspect();
@@ -70,7 +83,7 @@ export class DockerControl {
     else await container.start();
 
     return {
-      message: `${this.containerName} restarted at http://localhost:${this.hostPort}`,
+      message: `${this.options.containerName} restarted at http://localhost:${this.options.hostPort}`,
       status: await this.status()
     };
   }
@@ -84,7 +97,7 @@ export class DockerControl {
   async logs(tail = 100): Promise<string> {
     this.validateTail(tail);
     const container = await this.findContainer();
-    if (!container) return `${this.containerName} does not exist.\n`;
+    if (!container) return `${this.options.containerName} does not exist.\n`;
 
     const output = await container.logs({ stdout: true, stderr: true, timestamps: true, tail, follow: false });
     if (typeof output === "string") return output;
@@ -95,15 +108,23 @@ export class DockerControl {
     this.validateTail(tail);
     const container = await this.findContainer();
     if (!container) {
-      process.stdout.write(`${this.containerName} does not exist.\n`);
+      process.stdout.write(`${this.options.containerName} does not exist.\n`);
       return;
     }
     const stream = await container.logs({ stdout: true, stderr: true, timestamps: true, tail, follow: true });
     container.modem.demuxStream(stream, process.stdout, process.stderr);
   }
 
+  async remove(): Promise<void> {
+    const container = await this.findContainer();
+    if (!container) return;
+    const details = await container.inspect();
+    if (details.State.Running) await container.stop({ t: 10 });
+    await container.remove();
+  }
+
   private async findContainer(): Promise<Container | undefined> {
-    const container = this.docker.getContainer(this.containerName);
+    const container = this.docker.getContainer(this.options.containerName);
     try {
       await container.inspect();
       return container;
@@ -115,27 +136,31 @@ export class DockerControl {
 
   private createContainer(): Promise<Container> {
     return this.docker.createContainer({
-      name: this.containerName,
-      Image: this.imageName,
-      ExposedPorts: { "3000/tcp": {} },
-      HostConfig: { PortBindings: { "3000/tcp": [{ HostIp: "127.0.0.1", HostPort: this.hostPort }] } }
+      name: this.options.containerName,
+      Image: this.options.imageName,
+      ExposedPorts: { [`${this.options.containerPort}/tcp`]: {} },
+      HostConfig: {
+        PortBindings: {
+          [`${this.options.containerPort}/tcp`]: [{ HostIp: "127.0.0.1", HostPort: String(this.options.hostPort) }]
+        }
+      }
     });
   }
 
   private toStatus(details: Docker.ContainerInspectInfo): ContainerStatus {
     return {
-      name: this.containerName,
+      name: this.options.containerName,
       state: details.State.Status,
       running: details.State.Running,
       image: details.Config.Image,
       startedAt: details.State.StartedAt || null,
-      url: details.State.Running ? `http://localhost:${this.hostPort}` : null,
+      url: details.State.Running ? `http://localhost:${this.options.hostPort}` : null,
       error: details.State.Error || null
     };
   }
 
   private missingStatus(): ContainerStatus {
-    return { name: this.containerName, state: "not created", running: false, image: this.imageName, startedAt: null, url: null, error: null };
+    return { name: this.options.containerName, state: "not created", running: false, image: this.options.imageName, startedAt: null, url: null, error: null };
   }
 
   private validateTail(tail: number): void {

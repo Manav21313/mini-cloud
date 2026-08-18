@@ -3,37 +3,122 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MiniCloud Control Plane</title>
+  <title>MiniCloud Applications</title>
   <style>
-    body { max-width: 800px; margin: 3rem auto; padding: 0 1rem; font: 16px system-ui, sans-serif; color: #172033; }
-    button { margin: 0 .5rem .5rem 0; padding: .65rem 1rem; cursor: pointer; }
-    pre { min-height: 12rem; padding: 1rem; overflow: auto; background: #f1f4f8; border: 1px solid #d8dee8; white-space: pre-wrap; }
+    body { max-width: 1050px; margin: 2rem auto; padding: 0 1rem; font: 16px system-ui, sans-serif; color: #172033; }
+    form, article { padding: 1rem; margin-bottom: 1rem; border: 1px solid #d8dee8; border-radius: .4rem; }
+    form { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .75rem; align-items: end; }
+    label { display: grid; gap: .25rem; font-size: .9rem; }
+    input, button { padding: .6rem; font: inherit; }
+    button { cursor: pointer; }
+    .apps { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; }
+    .actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+    .meta { color: #526078; line-height: 1.5; }
+    .status { font-weight: 600; }
+    pre { min-height: 8rem; padding: 1rem; overflow: auto; background: #f1f4f8; border: 1px solid #d8dee8; white-space: pre-wrap; }
   </style>
 </head>
 <body>
-  <h1>MiniCloud Control Plane</h1>
-  <p>Control the <code>minicloud-sample</code> Docker container.</p>
-  <div>
-    <button data-method="POST" data-path="/deploy">Deploy</button>
-    <button data-method="POST" data-path="/stop">Stop</button>
-    <button data-method="POST" data-path="/restart">Restart</button>
-    <button data-method="GET" data-path="/status">Status</button>
-    <button data-method="GET" data-path="/logs">Logs</button>
-  </div>
+  <h1>Applications</h1>
+  <p>Register and manage Docker applications from one control plane.</p>
+
+  <h2>Deploy New App</h2>
+  <form id="new-app">
+    <label>Name <input name="name" required placeholder="My App"></label>
+    <label>Docker image <input name="image" required placeholder="my-app:latest"></label>
+    <label>Container name <input name="containerName" required placeholder="my-app"></label>
+    <label>Container port <input name="containerPort" type="number" min="1" max="65535" required value="3000"></label>
+    <label>Host port <input name="hostPort" type="number" min="1" max="65535" required value="3001"></label>
+    <button type="submit">Deploy App</button>
+  </form>
+
+  <div id="apps" class="apps"></div>
+  <h2>Output</h2>
   <pre id="output">Ready.</pre>
+
   <script>
+    const apps = document.querySelector("#apps");
     const output = document.querySelector("#output");
-    document.querySelectorAll("button").forEach((button) => button.addEventListener("click", async () => {
+
+    async function request(path, options = {}) {
+      const response = await fetch(path, options);
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+      return body;
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>'"]/g, character => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[character]);
+    }
+
+    async function loadApps() {
+      const applications = await request("/api/apps");
+      apps.innerHTML = applications.map(app => `
+        <article data-id="${escapeHtml(app.id)}">
+          <h3>${escapeHtml(app.name)}</h3>
+          <div class="meta">
+            Image: <code>${escapeHtml(app.image)}</code><br>
+            Container: <code>${escapeHtml(app.containerName)}</code><br>
+            Port: ${app.hostPort} &rarr; ${app.containerPort}<br>
+            Status: <span class="status">${escapeHtml(app.status)}</span>
+          </div>
+          <p class="actions">
+            <button data-action="deploy">Deploy</button>
+            <button data-action="stop">Stop</button>
+            <button data-action="restart">Restart</button>
+            <button data-action="status" data-method="GET">Status</button>
+            <button data-action="logs" data-method="GET">Logs</button>
+            <button data-open>Open Application</button>
+            <button data-delete>Delete</button>
+          </p>
+        </article>`).join("") || "<p>No applications registered.</p>";
+    }
+
+    apps.addEventListener("click", async event => {
+      const button = event.target.closest("button");
+      if (!button) return;
+      const card = button.closest("article");
+      const id = encodeURIComponent(card.dataset.id);
       output.textContent = "Working...";
       try {
-        const response = await fetch(button.dataset.path, { method: button.dataset.method });
-        const body = await response.json();
-        if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
-        output.textContent = body.logs ?? JSON.stringify(body, null, 2);
+        if (button.hasAttribute("data-open")) {
+          const application = (await request(`/api/apps/${id}`));
+          window.open(`http://localhost:${application.hostPort}`, "_blank", "noopener");
+          output.textContent = `Opened ${application.name}.`;
+          return;
+        }
+        if (button.hasAttribute("data-delete")) {
+          if (!confirm("Stop and permanently remove this container and unregister the app?")) return;
+          output.textContent = JSON.stringify(await request(`/api/apps/${id}`, { method: "DELETE" }), null, 2);
+        } else {
+          const result = await request(`/api/apps/${id}/${button.dataset.action}`, { method: button.dataset.method || "POST" });
+          output.textContent = result.logs ?? JSON.stringify(result, null, 2);
+        }
+        await loadApps();
+      } catch (error) { output.textContent = `Error: ${error.message}`; }
+    });
+
+    document.querySelector("#new-app").addEventListener("submit", async event => {
+      event.preventDefault();
+      output.textContent = "Registering and deploying...";
+      const data = Object.fromEntries(new FormData(event.target));
+      data.containerPort = Number(data.containerPort);
+      data.hostPort = Number(data.hostPort);
+      try {
+        const application = await request("/api/apps", {
+          method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(data)
+        });
+        const result = await request(`/api/apps/${encodeURIComponent(application.id)}/deploy`, { method: "POST" });
+        output.textContent = JSON.stringify(result, null, 2);
+        event.target.reset();
+        await loadApps();
       } catch (error) {
         output.textContent = `Error: ${error.message}`;
+        await loadApps();
       }
-    }));
+    });
+
+    loadApps().catch(error => { output.textContent = `Error: ${error.message}`; });
   </script>
 </body>
 </html>

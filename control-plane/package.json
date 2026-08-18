@@ -2,7 +2,7 @@
   "name": "minicloud-control-plane",
   "version": "1.0.0",
   "private": true,
-  "description": "A TypeScript CLI that controls the MiniCloud sample container",
+  "description": "A TypeScript control plane for managing Docker applications",
   "scripts": {
     "build": "tsc",
     "precontrol": "npm run build",
@@ -22,4 +22,4 @@
     "typescript": "^5.9.3"
   }
 }
-
+  
