@@ -4,9 +4,11 @@ import { createReadStream } from "node:fs";
 import { IncomingMessage, createServer, ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { Application, ApplicationRegistry, NewApplication, RegistryError } from "./applications/registry.js";
+import { SourceDeployer } from "./deployments/source.js";
 import { DockerControl } from "./docker/control.js";
 
 const registry = new ApplicationRegistry();
+const sourceDeployer = new SourceDeployer(registry);
 const port = Number(process.env.CONTROL_PLANE_PORT ?? "8080");
 const dashboardPath = resolve(__dirname, "..", "public", "index.html");
 
@@ -34,7 +36,9 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
     chunks.push(buffer);
   }
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
+    const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new Error("Expected a JSON object");
+    return body as Record<string, unknown>;
   } catch {
     throw new RegistryError("Request body must be valid JSON", 400);
   }
@@ -79,6 +83,10 @@ const server = createServer(async (request, response) => {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       createReadStream(dashboardPath).on("error", (error) => json(response, 500, { error: error.message })).pipe(response);
       return;
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/deploy/github") {
+      return json(response, 201, await sourceDeployer.deploy(await readJson(request)));
     }
 
     if (request.method === "GET" && url.pathname === "/api/apps") return json(response, 200, await registry.list());

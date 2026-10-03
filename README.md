@@ -1,4 +1,4 @@
-# MiniCloud
+# MiniCloud V0.4
 
 A local TypeScript control plane for managing Docker applications. The dashboard
 supports registration, deployment, stop, restart, status, logs, deletion, and
@@ -12,6 +12,8 @@ opening applications. Each registration has its own container name and host port
 - `control-plane/migrations/001_applications.sql`: applications table and constraints.
 - `compose.yaml`: local PostgreSQL with the persistent `minicloud_postgres_data` volume.
 - `control-plane/src/docker/control.ts`: container lifecycle and logs through Dockerode.
+- `control-plane/src/deployments/source.ts`: public GitHub validation, cloning, Docker builds, and failure cleanup.
+- `control-plane/migrations/002_source_deployments.sql`: source deployment metadata.
 - `control-plane/src/cli.ts` and `index.ts`: single-container CLI.
 - `control-plane/public/index.html`: dashboard; no separate frontend build.
 - `sample-app/server.js` and `Dockerfile`: dependency-free Node HTTP sample, listening on container port 3000.
@@ -136,7 +138,7 @@ error; startup or a later status inspection reconciles the saved state. Startup
 never automatically deploys stopped applications.
 
 The migration runner tracks applied SQL in `schema_migrations` and applies
-migration 001 plus the sample seed in one transaction. Startup also runs this
+pending migrations in one transaction; migration 001 also seeds the sample once. Startup also runs this
 idempotent setup, so the explicit `migrate` command is optional. If PostgreSQL
 is unavailable, startup fails rather than silently using an in-memory registry.
 
@@ -180,3 +182,120 @@ show `running` and Banana `exited`. Check with:
 ```sh
 docker inspect --format '{{.Name}} {{.State.Status}}' minicloud-pineapple minicloud-banana
 ```
+
+## Deploy from public GitHub (V0.4)
+
+Git must be installed on the control-plane machine. On this Mac it is already
+available. PostgreSQL and Docker must be running as described above. Keep the
+existing root `.env`; no GitHub token or additional secret is needed.
+
+On the dashboard, use **Deploy from GitHub** and enter:
+
+- Application name: `GitHub Hello World`
+- Repository URL: `https://github.com/crccheck/docker-hello-world`
+- Branch: `master` (the form defaults to `main`; this repository uses `master`)
+- Container port: `8000`
+- Host port: `3005`
+
+Click **Deploy from GitHub** and wait for the build to finish. Then click
+**Open Application** or open <http://localhost:3005>.
+This is a small existing public test repository; MiniCloud does not need to
+create a repository or publish your code.
+
+The equivalent API request is:
+
+```sh
+curl --fail-with-body -X POST http://localhost:8080/api/deploy/github \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"GitHub Hello World","repositoryUrl":"https://github.com/crccheck/docker-hello-world","branch":"master","containerPort":8000,"hostPort":3005}'
+open http://localhost:3005
+```
+
+Do not submit this again with the same name or port while it is registered; use
+its existing container actions, delete it first, or choose another name and port.
+
+The request flow is:
+
+```text
+GitHub form → POST /api/deploy/github
+  → validate URL, branch, name, and ports
+  → acquire registration lock and check database/Docker/host conflicts
+  → verify the repository is public through unauthenticated GitHub API
+  → create a unique temporary directory and shallow-clone the selected branch
+  → require a regular root Dockerfile
+  → build minicloud-source:<unique UUID> using the Docker API
+  → create a new minicloud-source-<application-name> container and start it
+  → verify it remains running briefly
+  → insert application and source metadata into PostgreSQL and commit
+  → remove temporary checkout
+  → return HTTP 201 and refresh the existing application cards
+```
+
+No source scripts or Dockerfile commands run directly on the control-plane host.
+Only Git cloning runs there with a fixed executable and argument list, no shell,
+and disabled user Git configuration, credential helpers, hooks, and submodules.
+Build instructions run in Docker. The checkout alone is the build context; Git
+metadata is excluded and the repository's `.dockerignore` is applied.
+
+The existing `docker_image` column stores the generated image name/tag, so there
+is no redundant `image_name` column. Source registrations also store
+`repository_url`, `branch`, `last_deployed_at`, and `build_status` (`succeeded`).
+Image-only registrations have null source metadata. Failed builds are returned
+as errors with recent Docker output rather than saved as broken registrations.
+
+Application names are now checked case-insensitively during registration.
+Container names and host ports remain unique. Source container names are derived
+from the application name; different names that produce the same slug are
+rejected. A shared PostgreSQL advisory lock prevents concurrent source/image
+registrations from racing. Other existing application actions remain available
+while a source build runs.
+
+Clone, build, container-start, or database-save failure rolls back registration
+and removes only the new attempt's container and tagged image. Temporary
+checkouts are removed in a `finally` block. Existing containers are never reused
+by source deployment. Cleanup failures are reported with the affected resource
+IDs. Docker can retain shared build cache and pulled base images.
+
+After success, the usual Deploy/Stop/Restart/Status/Logs/Delete/Open buttons work.
+**Deploy** starts the saved image; it does not fetch updated GitHub code. To build
+new source in this milestone, delete the registration and submit the GitHub form
+again. Delete removes the container and database row; successful images are
+retained, consistent with existing image-based deployments. To remove a specific
+unused generated image, use `docker image rm <image-tag>`.
+
+Run the source-deployment integration test:
+
+```sh
+npm --prefix control-plane run test:source
+```
+
+It submits the actual dashboard form handler to a live test control plane on
+port 8083, clones/builds the public test repository, verifies localhost on port
+3010, restarts the control plane, and checks the existing lifecycle actions and
+PostgreSQL source metadata. Dashboard form/rendering and Open URL checks use a
+minimal test DOM, not a real browser. Failure tests cover invalid URL/ports,
+missing branch/Dockerfile, duplicate names/container names, occupied host ports,
+concurrent registrations, and database-save failure. The Docker build failure
+case clones the public repository then replaces its disposable test Dockerfile
+with a deterministic failing RUN instruction, using a test-only dependency
+injection. Production never allows that override. The test removes its apps,
+containers, and generated image tags; it keeps existing registrations intact.
+
+Remaining limits for this milestone:
+
+- Public `https://github.com/owner/repository` URLs only; no credentials, redirects,
+  SSH, GitHub Enterprise, private repositories, Git LFS, or submodule checkout.
+- A regular `Dockerfile` at repository root, with that root as the build context;
+  no selectable subdirectory, build arguments, build secrets, or Compose deployment.
+- The Docker Engine API's default builder is used; BuildKit-only Dockerfile
+  features are not supported by this path.
+- Deployments are synchronous. One registration/build can run at a time; competing
+  registration requests return 409 and can be retried after completion.
+- Public GitHub API rate limits apply. Verification times out after 15 seconds,
+  clone after 2 minutes, and build after 10 minutes.
+- Startup checks container running state, not HTTP readiness or application health.
+  The brief startup check catches immediate exits; later failures remain visible
+  through Status and Logs. Docker remains the runtime source of truth.
+- Docker and PostgreSQL do not share a transaction. Normal failures are compensated;
+  abrupt machine/process crashes or ambiguous database commits may require manual
+  cleanup of a generated Docker resource. No background recovery system is added.

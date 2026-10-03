@@ -51,7 +51,7 @@ async function dashboard(expectedStatuses) {
   const response = await fetch(base);
   assert.equal(response.status, 200);
   const html = await response.text();
-  const elements = Object.fromEntries(['#apps','#output','#new-app'].map(id=>[id,{innerHTML:'',textContent:'',addEventListener(){}}]));
+  const elements = Object.fromEntries(['#apps','#output','#new-app','#github-app'].map(id=>[id,{innerHTML:'',textContent:'',addEventListener(){}}]));
   // Run the existing, unchanged UI script with a minimal DOM and real API fetches.
   const context = {document:{querySelector:id=>elements[id]},fetch:(route,options)=>fetch(base+route,options),console};
   await vm.runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)[1]+'\nloadApps();',context);

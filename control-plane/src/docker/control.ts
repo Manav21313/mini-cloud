@@ -56,6 +56,17 @@ export class DockerControl {
     };
   }
 
+  // Source deployments must never reuse an existing container with the same name.
+  async deployNew(onCreated: (container: Container) => void): Promise<ActionResult> {
+    const container = await this.createContainer();
+    onCreated(container);
+    await container.start();
+    return {
+      message: `${this.options.containerName} started at http://localhost:${this.options.hostPort}`,
+      status: this.toStatus(await container.inspect())
+    };
+  }
+
   async stop(): Promise<ActionResult> {
     const container = await this.findContainer();
     if (!container) {

@@ -20,17 +20,20 @@ export async function migrate(): Promise<void> {
     await client.query(`CREATE TABLE IF NOT EXISTS schema_migrations (
       version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`);
-    const version = "001_applications";
-    const applied = await client.query("SELECT version FROM schema_migrations WHERE version = $1", [version]);
-    if (applied.rowCount === 0) {
-      await client.query(await readFile(resolve(__dirname, "..", "..", "migrations", `${version}.sql`), "utf8"));
-      const app = sampleApplication;
-      // Seed once, in the migration transaction. Deleting it does not resurrect it.
-      await client.query(`INSERT INTO applications
-        (id, name, docker_image, container_name, container_port, host_port, status)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [app.id, app.name, app.image, app.containerName, app.containerPort, app.hostPort, app.status]);
-      await client.query("INSERT INTO schema_migrations (version) VALUES ($1)", [version]);
+    for (const version of ["001_applications", "002_source_deployments"]) {
+      const applied = await client.query("SELECT version FROM schema_migrations WHERE version = $1", [version]);
+      if (applied.rowCount === 0) {
+        await client.query(await readFile(resolve(__dirname, "..", "..", "migrations", `${version}.sql`), "utf8"));
+        if (version === "001_applications") {
+          const app = sampleApplication;
+          // Seed once, in the migration transaction. Deleting it does not resurrect it.
+          await client.query(`INSERT INTO applications
+            (id, name, docker_image, container_name, container_port, host_port, status)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+            [app.id, app.name, app.image, app.containerName, app.containerPort, app.hostPort, app.status]);
+        }
+        await client.query("INSERT INTO schema_migrations (version) VALUES ($1)", [version]);
+      }
     }
     await client.query("COMMIT");
   } catch (error) {
