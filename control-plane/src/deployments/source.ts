@@ -7,6 +7,7 @@ import { tmpdir, devNull } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
 import { ApplicationRegistry, NewApplication, RegistryError } from "../applications/registry.js";
+import { prepareProject } from "./projects.js";
 import { DockerControl } from "../docker/control.js";
 
 const exec = promisify(execFile);
@@ -156,6 +157,7 @@ export class SourceDeployer {
         await checkHostPort(input.hostPort);
         directory = await mkdtemp(join(tmpdir(), "minicloud-build-"));
         const checkout = await this.clone(input, directory);
+        const project = await prepareProject(checkout, input.containerPort);
         buildAttempted = true;
         const buildOutput = await buildImage(this.docker, checkout, image, attempt);
         // Recheck after a potentially lengthy build. Docker start is the final binding authority.
@@ -168,7 +170,7 @@ export class SourceDeployer {
         const saved = await this.registry.insert(application, client, {
           repositoryUrl: input.repositoryUrl, branch: input.branch, status: status.state
         });
-        return { application: saved, message: deployed.message, status, buildOutput };
+        return { application: saved, message: deployed.message, status, buildOutput, ...project };
       });
       committed = true;
       return result;

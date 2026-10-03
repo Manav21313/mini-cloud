@@ -1,301 +1,220 @@
-# MiniCloud V0.4
+# MiniCloud
 
-A local TypeScript control plane for managing Docker applications. The dashboard
-supports registration, deployment, stop, restart, status, logs, deletion, and
-opening applications. Each registration has its own container name and host port.
+A self-hosted cloud deployment platform that can deploy and manage Docker applications through a TypeScript control plane.
+
+## Current features
+
+- Deploy existing Docker images and manage multiple applications.
+- Start (Deploy), stop, restart, and delete containers; inspect status and logs; open applications in the browser.
+- Persist application registrations and deployment metadata in PostgreSQL.
+- Deploy from public GitHub repositories using an existing root Dockerfile.
+- Automatically detect supported Vite and basic Node.js projects without a Dockerfile, generating temporary build configuration.
+- Use Docker-based application isolation and configurable host/container port mappings.
 
 ## Architecture
 
-- `control-plane/src/server.ts`: Node HTTP server, dashboard, REST API, and seeded sample app.
-- `control-plane/src/applications/registry.ts`: PostgreSQL application registry and validation.
-- `control-plane/src/database/`: environment loading, pg pool, and migration runner.
-- `control-plane/migrations/001_applications.sql`: applications table and constraints.
-- `compose.yaml`: local PostgreSQL with the persistent `minicloud_postgres_data` volume.
-- `control-plane/src/docker/control.ts`: container lifecycle and logs through Dockerode.
-- `control-plane/src/deployments/source.ts`: public GitHub validation, cloning, Docker builds, and failure cleanup.
-- `control-plane/migrations/002_source_deployments.sql`: source deployment metadata.
-- `control-plane/src/cli.ts` and `index.ts`: single-container CLI.
-- `control-plane/public/index.html`: dashboard; no separate frontend build.
-- `sample-app/server.js` and `Dockerfile`: dependency-free Node HTTP sample, listening on container port 3000.
+```text
+Browser dashboard
+    -> TypeScript control plane
+        -> PostgreSQL for deployment metadata
+        -> Docker for building/running containers
+```
 
-Registrations persist in PostgreSQL across control-plane and database-container
-restarts. Docker is the source of truth for actual container state. Before serving
-the dashboard, MiniCloud loads all registrations, inspects Docker, and saves the
-observed status. Failed inspections are recorded as `unknown`, never assumed
-stopped. The Status button refreshes a container's observed status on demand.
-Docker containers remain until deleted. Deletion stops/removes the container and
-unregisters the application. Images are built separately; deployment uses an
-existing image.
+The dashboard is plain HTML, CSS, and JavaScript served by a Node HTTP server; there is no separate frontend build. PostgreSQL remembers registrations across restarts. Docker is the source of truth for runtime state: startup inspects registered containers and reconciles stored status. Startup does not automatically start stopped containers. Failed Docker inspections are recorded as `unknown`.
 
-## Run on macOS
+### Tech stack
 
-Install Node.js 22 or newer and Docker Desktop. Start Docker
-Desktop and wait until `docker info` succeeds. Run these commands from this repo:
+TypeScript, Node.js, PostgreSQL (`pg` with parameterized SQL), Docker (Dockerode), and Git/GitHub.
+
+### Important files
+
+| Path | Purpose |
+| --- | --- |
+| `control-plane/public/index.html` | Dashboard and forms |
+| `control-plane/src/server.ts` | HTTP server and application API |
+| `control-plane/src/applications/registry.ts` | PostgreSQL registration, validation, and status updates |
+| `control-plane/src/database/` | Environment loading, connection pool, and migration runner |
+| `control-plane/migrations/` | Versioned SQL schema |
+| `control-plane/src/docker/control.ts` | Docker container lifecycle and logs |
+| `control-plane/src/deployments/source.ts` | Public GitHub cloning, builds, registration, and cleanup |
+| `control-plane/src/deployments/projects.ts` | Project detection and temporary Dockerfile generation |
+| `control-plane/tests/` | Detection tests and live integration tests |
+| `compose.yaml` | PostgreSQL container and persistent volume |
+| `sample-app/` | Small Node HTTP app and Dockerfile |
+
+## Local setup
+
+Install Node.js **22 or newer**, npm, Git, Docker Engine, and Docker Compose. On macOS, start Docker Desktop. Confirm the tools work:
 
 ```sh
-cd /Users/manavc/Desktop/mini-cloud
-open -a Docker
+node --version
+npm --version
+git --version
 docker info
+docker compose version
+```
+
+Clone this repository and run the following commands from its root:
+
+```sh
 npm --prefix control-plane ci
+```
+
+### Environment variables
+
+If `.env` does not already exist, copy the template:
+
+```sh
 cp .env.example .env
-# Edit .env and set PGPASSWORD to your own password.
+```
+
+Edit `.env` and set your own database password before starting PostgreSQL. Keep an existing `.env` rather than overwriting it. The example below contains placeholders only:
+
+```dotenv
+PGHOST=127.0.0.1
+PGPORT=5432
+PGDATABASE=minicloud
+PGUSER=minicloud
+PGPASSWORD=replace-with-your-own-local-password
+CONTROL_PLANE_PORT=8080
+```
+
+`PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, and `PGPASSWORD` are required by the control plane. `CONTROL_PLANE_PORT` defaults to 8080. Compose reads the root `.env`; the web control plane also loads it regardless of working directory. Explicit environment variables take precedence. Real environment files are ignored; `.env.example` is tracked.
+
+Optional `MINICLOUD_IMAGE`, `MINICLOUD_CONTAINER`, and `MINICLOUD_PORT` configure the initial sample registration and the single-container CLI. Their defaults are `minicloud-sample`, `minicloud-sample`, and `3000`. Changes do not overwrite saved registrations.
+
+### Start PostgreSQL and run migrations
+
+```sh
 docker compose up -d --wait postgres
 npm --prefix control-plane run migrate
-docker build -t minicloud-sample ./sample-app
-npm --prefix control-plane start
 ```
 
-If `.env` already exists, keep it rather than copying over it. The current Mac
-has an ignored `.env` with a generated local password. Compose reads the root
-`.env`; the control plane loads the same file independent of its working directory.
-Explicit environment variables take precedence.
-
-The last command builds TypeScript and runs the dashboard at
-<http://localhost:8080>. Keep that terminal running. For development instead:
-
-```sh
-npm --prefix control-plane run dev
-```
-
-In another terminal, deploy the seeded sample and open it:
-
-```sh
-curl --fail-with-body -X POST http://localhost:8080/api/apps/minicloud-sample/deploy
-open http://localhost:8080
-open http://localhost:3000
-```
-
-To register and deploy a second container on host port 3001:
-
-```sh
-SECOND_APP_ID=$(curl --fail-with-body -sS http://localhost:8080/api/apps \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"Second Sample","image":"minicloud-sample","containerName":"minicloud-sample-2","containerPort":3000,"hostPort":3001}' \
-  | node -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{const a=JSON.parse(s);if(!a.id)throw Error(a.error||"Registration failed");console.log(a.id)})')
-curl --fail-with-body -X POST "http://localhost:8080/api/apps/$SECOND_APP_ID/deploy"
-open http://localhost:3001
-```
-
-Alternatively use the dashboard's **Deploy New App** form with those values; it
-registers and deploys in one flow. Names and host ports must be unique. After
-deleting the second container, these registration commands can be used again.
-
-## Docker connection
-
-MiniCloud uses Dockerode's cross-platform defaults: Docker Desktop's
-`~/.docker/run/docker.sock` on macOS when available, otherwise
-`/var/run/docker.sock` on Unix, and the Windows named pipe only on Windows.
-There is no hardcoded Windows socket in MiniCloud source.
-
-Dockerode also honors `DOCKER_HOST` and its Docker TLS environment settings.
-For an alternate local Unix socket, set `DOCKER_HOST=unix:///path/to/docker.sock`
-before starting MiniCloud. Dockerode does not automatically read Docker CLI
-contexts. With an alternate local Unix-socket context, use:
-
-```sh
-DOCKER_HOST="$(docker context inspect --format '{{.Endpoints.docker.Host}}')" npm --prefix control-plane start
-```
-
-Application browser URLs point to localhost, as this version manages local apps.
-`CONTROL_PLANE_PORT` changes dashboard port (default 8080).
-`MINICLOUD_IMAGE`, `MINICLOUD_CONTAINER`, and `MINICLOUD_PORT` configure the
-sample seed on the first migration and configure the CLI (defaults:
-minicloud-sample, minicloud-sample, 3000). Changing these values later does not
-overwrite a saved registration. The sample is seeded once; deleting it is durable.
-The CLI continues to manage Docker directly; the web server refreshes its status
-on startup or through the Status button.
-
-## CLI
-
-From the repository root:
-
-```sh
-npm --prefix control-plane run control -- status
-npm --prefix control-plane run control -- deploy
-npm --prefix control-plane run control -- stop
-npm --prefix control-plane run control -- restart
-npm --prefix control-plane run control -- logs --tail 20
-npm --prefix control-plane run control -- logs --follow
-```
-
-The web API handles registration and deletion; the CLI targets a single container.
-
-## PostgreSQL persistence
-
-`applications` stores `id`, `name`, `docker_image`, `container_name`,
-`container_port`, `host_port`, `status`, and `created_at`. IDs remain text to
-preserve the existing sample ID; newly registered apps use UUID strings.
-The API keeps its existing camelCase fields (`image`, `containerName`, etc.)
-and adds `createdAt`. All application values use parameterized SQL through `pg`.
-Unique database constraints enforce container names and host ports, even for
-concurrent registrations.
-
-Registration commits its row before returning success. Deploy, stop, restart,
-and status inspection save Docker's observed status. Deletion removes the Docker
-container first, then deletes its row. Docker and PostgreSQL cannot share a
-transaction: if a database write fails after a Docker action, the API returns an
-error; startup or a later status inspection reconciles the saved state. Startup
-never automatically deploys stopped applications.
-
-The migration runner tracks applied SQL in `schema_migrations` and applies
-pending migrations in one transaction; migration 001 also seeds the sample once. Startup also runs this
-idempotent setup, so the explicit `migrate` command is optional. If PostgreSQL
-is unavailable, startup fails rather than silently using an in-memory registry.
-
-Inspect the rows without putting a password in the command:
-
-```sh
-docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "SELECT name, container_name, host_port, status, created_at FROM applications ORDER BY created_at;"'
-```
-
-Stop/start PostgreSQL while keeping its volume:
+PostgreSQL is bound to loopback and stores data in the named `minicloud_postgres_data` Docker volume. The migration runner applies versioned SQL transactionally and records versions in `schema_migrations`. The first migration seeds the sample registration once. Server startup also runs pending migrations.
 
 ```sh
 docker compose stop postgres
 docker compose up -d --wait postgres
 ```
 
-`docker compose down` also preserves the named volume. `docker compose down -v`
-deletes the database data. Database initialization credentials are set when the
-volume is first created; editing `.env` alone does not change an existing
-PostgreSQL password.
+These commands preserve data. `docker compose down` preserves the volume too; **`docker compose down -v` deletes database data**. Initialization credentials apply when the volume is first created; editing `.env` alone does not change an existing database password.
 
-Run the persistence integration test with PostgreSQL running and the sample image
-built:
+### Build the sample app and start MiniCloud
 
 ```sh
-npm --prefix control-plane run test:persistence
+docker build -t minicloud-sample ./sample-app
+npm --prefix control-plane start
 ```
 
-This test runs its own control plane on port 8082, registers Pineapple (port 3002)
-and Banana (port 3003), exercises lifecycle and deletion, stops the control plane,
-stops Banana directly through Docker, then restarts the control plane. It checks
-that IDs, timestamps, and registrations survive and that startup repairs Banana's
-stale saved status. It leaves Pineapple running and Banana stopped for dashboard
-inspection. Use those container names and ports only for these sample test apps.
+The start command compiles TypeScript and keeps the server running. Open <http://localhost:8080>. For development, use `npm --prefix control-plane run dev` instead. Stop the control plane with Ctrl+C; application containers remain independent of that process.
 
-To repeat the dashboard restart check, open <http://localhost:8080>, confirm both
-cards appear, press Ctrl+C in the control-plane terminal, run
-`npm --prefix control-plane start` again, and reload the page. Pineapple should
-show `running` and Banana `exited`. Check with:
+Deploy the seeded sample through the dashboard's **Deploy** button, or:
 
 ```sh
-docker inspect --format '{{.Name}} {{.State.Status}}' minicloud-pineapple minicloud-banana
+curl --fail-with-body -X POST http://localhost:8080/api/apps/minicloud-sample/deploy
 ```
 
-## Deploy from public GitHub (V0.4)
+Open <http://localhost:3000>. To deploy another container, use **Deploy New App** with name `Second Sample`, image `minicloud-sample`, container name `minicloud-sample-2`, container port `3000`, and host port `3001`. Then open <http://localhost:3001>. Application names, container names, and host ports must be unique.
 
-Git must be installed on the control-plane machine. On this Mac it is already
-available. PostgreSQL and Docker must be running as described above. Keep the
-existing root `.env`; no GitHub token or additional secret is needed.
+### Docker connection
 
-On the dashboard, use **Deploy from GitHub** and enter:
+MiniCloud uses Dockerode's cross-platform connection defaults, including Docker Desktop's local socket on macOS. It also supports `DOCKER_HOST` and Docker TLS environment settings. It does not automatically select Docker CLI contexts. For an alternate local Unix-socket context:
 
-- Application name: `GitHub Hello World`
-- Repository URL: `https://github.com/crccheck/docker-hello-world`
-- Branch: `master` (the form defaults to `main`; this repository uses `master`)
-- Container port: `8000`
-- Host port: `3005`
+```sh
+DOCKER_HOST="$(docker context inspect --format '{{.Endpoints.docker.Host}}')" npm --prefix control-plane start
+```
 
-Click **Deploy from GitHub** and wait for the build to finish. Then click
-**Open Application** or open <http://localhost:3005>.
-This is a small existing public test repository; MiniCloud does not need to
-create a repository or publish your code.
+Browser URLs use localhost. Both the control plane and published application ports bind to loopback in this version.
 
-The equivalent API request is:
+## Deploy from public GitHub
+
+Use **Deploy from GitHub** with an application name, public repository URL, branch (default `main`), container port, and host port.
+
+Two example repositories:
+
+| Application | Repository | Branch | Container port | Host port |
+| --- | --- | --- | --- | --- |
+| GitHub Hello World (existing Dockerfile) | https://github.com/crccheck/docker-hello-world | master | 8000 | 3005 |
+| FocusFlow (automatic Vite build) | https://github.com/Manav21313/FocusFlow | main | 80 | 3006 |
+
+These are public repository examples, not credentials or private endpoints. Repository contents and availability may change. After deployment, use **Open Application** or the selected localhost host port. If an example is already registered, use its existing actions or select a different name and unused port.
+
+Equivalent FocusFlow request:
 
 ```sh
 curl --fail-with-body -X POST http://localhost:8080/api/deploy/github \
   -H 'Content-Type: application/json' \
-  -d '{"name":"GitHub Hello World","repositoryUrl":"https://github.com/crccheck/docker-hello-world","branch":"master","containerPort":8000,"hostPort":3005}'
-open http://localhost:3005
+  -d '{"name":"FocusFlow","repositoryUrl":"https://github.com/Manav21313/FocusFlow","branch":"main","containerPort":80,"hostPort":3006}'
 ```
 
-Do not submit this again with the same name or port while it is registered; use
-its existing container actions, delete it first, or choose another name and port.
-
-The request flow is:
+### Deployment flow
 
 ```text
-GitHub form → POST /api/deploy/github
-  → validate URL, branch, name, and ports
-  → acquire registration lock and check database/Docker/host conflicts
-  → verify the repository is public through unauthenticated GitHub API
-  → create a unique temporary directory and shallow-clone the selected branch
-  → require a regular root Dockerfile
-  → build minicloud-source:<unique UUID> using the Docker API
-  → create a new minicloud-source-<application-name> container and start it
-  → verify it remains running briefly
-  → insert application and source metadata into PostgreSQL and commit
-  → remove temporary checkout
-  → return HTTP 201 and refresh the existing application cards
+Validate public URL, branch, name, and ports
+    -> Check registration/container/host-port conflicts
+    -> Verify public visibility through the unauthenticated GitHub API
+    -> Shallow-clone into a unique system temporary directory
+    -> Use the existing Dockerfile OR detect a supported npm project
+    -> Build minicloud-source:<unique UUID> through Docker
+    -> Create and start a uniquely named container with the selected port mapping
+    -> Save the successful application and deployment metadata in PostgreSQL
+    -> Remove the temporary checkout and refresh dashboard cards
 ```
 
-No source scripts or Dockerfile commands run directly on the control-plane host.
-Only Git cloning runs there with a fixed executable and argument list, no shell,
-and disabled user Git configuration, credential helpers, hooks, and submodules.
-Build instructions run in Docker. The checkout alone is the build context; Git
-metadata is excluded and the repository's `.dockerignore` is applied.
+An existing regular root Dockerfile always takes precedence and is unchanged. Without one:
 
-The existing `docker_image` column stores the generated image name/tag, so there
-is no redundant `image_name` column. Source registrations also store
-`repository_url`, `branch`, `last_deployed_at`, and `build_status` (`succeeded`).
-Image-only registrations have null source metadata. Failed builds are returned
-as errors with recent Docker output rather than saved as broken registrations.
+- **Vite:** requires a Vite dependency or recognized React plugin, a build script invoking `vite build`, and root `index.html`. Node 22 installs dependencies (`npm ci` with an npm lockfile, otherwise `npm install`) and runs the build. nginx serves `dist/`, including SPA route fallback, on the supplied container port.
+- **Node.js:** supports `npm start` using `node <existing JavaScript file>` (optionally `--enable-source-maps`), or npm's default root `server.js`. Node 22 installs production dependencies and runs `npm start` as a non-root user. The app must honor `PORT` and listen on a container-accessible interface; MiniCloud also sets `HOST=0.0.0.0`.
 
-Application names are now checked case-insensitively during registration.
-Container names and host ports remain unique. Source container names are derived
-from the application name; different names that produce the same slug are
-rejected. A shared PostgreSQL advisory lock prevents concurrent source/image
-registrations from racing. Other existing application actions remain available
-while a source build runs.
+Generated Dockerfiles and nginx configuration exist only in the temporary checkout; nothing is committed or pushed to the source repository. Generated builds exclude local dependencies, Git metadata, environment files, npm configuration, logs, and prior build output. Existing Dockerfile builds retain the repository's own ignore rules, while Git metadata is excluded from the context.
 
-Clone, build, container-start, or database-save failure rolls back registration
-and removes only the new attempt's container and tagged image. Temporary
-checkouts are removed in a `finally` block. Existing containers are never reused
-by source deployment. Cleanup failures are reported with the affected resource
-IDs. Docker can retain shared build cache and pulled base images.
+Detection reads files as data. Git runs with a fixed argument list and disabled user configuration, credential helpers, and hooks. Repository installation scripts and builds run inside Docker, not directly on the control-plane host. Docker isolation does not make arbitrary untrusted code safe; use repositories you trust.
 
-After success, the usual Deploy/Stop/Restart/Status/Logs/Delete/Open buttons work.
-**Deploy** starts the saved image; it does not fetch updated GitHub code. To build
-new source in this milestone, delete the registration and submit the GitHub form
-again. Delete removes the container and database row; successful images are
-retained, consistent with existing image-based deployments. To remove a specific
-unused generated image, use `docker image rm <image-tag>`.
+Unsupported or ambiguous projects fail clearly:
 
-Run the source-deployment integration test:
+> MiniCloud could not automatically determine how to containerize this repository. Add a Dockerfile manually.
+
+Clone/build/start/save failures return useful errors and attempt to remove the new container and image tag; temporary checkouts are removed afterward. Failed builds do not create normal application registrations. Docker may retain base images and build cache.
+
+Successful source deployments store repository URL, branch, deployment timestamp, build status, and the generated image tag. The detected project type appears in the response/Output panel. Existing container actions continue working. **Deploy** starts the saved image; it does not fetch new source. To rebuild source, delete the registration and submit again. Delete removes the container and database record, but retains successful images.
+
+## Tests and checks
+
+Safe local checks (no live application/database changes):
 
 ```sh
-npm --prefix control-plane run test:source
+npm --prefix control-plane run build
+npm --prefix control-plane run test:projects
+git diff --check
 ```
 
-It submits the actual dashboard form handler to a live test control plane on
-port 8083, clones/builds the public test repository, verifies localhost on port
-3010, restarts the control plane, and checks the existing lifecycle actions and
-PostgreSQL source metadata. Dashboard form/rendering and Open URL checks use a
-minimal test DOM, not a real browser. Failure tests cover invalid URL/ports,
-missing branch/Dockerfile, duplicate names/container names, occupied host ports,
-concurrent registrations, and database-save failure. The Docker build failure
-case clones the public repository then replaces its disposable test Dockerfile
-with a deterministic failing RUN instruction, using a test-only dependency
-injection. Production never allows that override. The test removes its apps,
-containers, and generated image tags; it keeps existing registrations intact.
+Detection tests use temporary local fixtures. They require the database environment variables to be configured, but do not connect to PostgreSQL or build Docker images.
 
-Remaining limits for this milestone:
+Live integration tests require PostgreSQL and Docker; source tests also need GitHub access. Use a development database and available test ports:
 
-- Public `https://github.com/owner/repository` URLs only; no credentials, redirects,
-  SSH, GitHub Enterprise, private repositories, Git LFS, or submodule checkout.
-- A regular `Dockerfile` at repository root, with that root as the build context;
-  no selectable subdirectory, build arguments, build secrets, or Compose deployment.
-- The Docker Engine API's default builder is used; BuildKit-only Dockerfile
-  features are not supported by this path.
-- Deployments are synchronous. One registration/build can run at a time; competing
-  registration requests return 409 and can be retried after completion.
-- Public GitHub API rate limits apply. Verification times out after 15 seconds,
-  clone after 2 minutes, and build after 10 minutes.
-- Startup checks container running state, not HTTP readiness or application health.
-  The brief startup check catches immediate exits; later failures remain visible
-  through Status and Logs. Docker remains the runtime source of truth.
-- Docker and PostgreSQL do not share a transaction. Normal failures are compensated;
-  abrupt machine/process crashes or ambiguous database commits may require manual
-  cleanup of a generated Docker resource. No background recovery system is added.
+```sh
+npm --prefix control-plane run test:persistence
+npm --prefix control-plane run test:source
+npm --prefix control-plane run test:auto
+```
+
+- `test:persistence`: uses control-plane port 8082, sample ports 3002–3004, and leaves Pineapple running and Banana stopped. Requires the sample image.
+- `test:source`: uses control-plane port 8083 and application ports 3010–3011; checks existing Dockerfile deployment, validation, cleanup, persistence, and lifecycle actions. Removes its disposable registrations/resources.
+- `test:auto`: uses control-plane port 8084 and application ports 3006, 3015–3016; tests FocusFlow/Vite, a public Node backend, unsupported projects, build/install errors, cleanup, and restart persistence. Leaves FocusFlow registered at port 3006; reuses it on subsequent runs.
+
+Integration tests submit the dashboard's actual JavaScript form handler using a minimal test DOM; they are not full browser tests. Do not run integration suites concurrently against the same registry.
+
+## Current limitations
+
+- Local, unauthenticated dashboard; no production access-control system.
+- Public HTTPS GitHub repositories only; no tokens, private repositories, SSH, GitHub Enterprise, redirects, Git LFS, or submodule checkout.
+- Root build context only. Automatic builds support npm, static Vite with default `dist/` output, and basic JavaScript Node backends. Monorepos, SSR, custom output directories, TypeScript backend compilation, and other frameworks need a Dockerfile.
+- No application environment-variable management, build secrets, build arguments, Compose application deployment, or automatic redeployment. Applications such as FocusFlow still require their own service configuration for features that depend on Firebase/Spotify.
+- Docker Engine's default API builder is used; BuildKit-only features are unsupported by this build path.
+- Builds are synchronous; one registration/build runs at a time. Competing registration requests return 409. GitHub rate limits apply; public verification, clone, and build have timeouts.
+- Runtime status is container state, not HTTP readiness or health monitoring. Status updates occur during actions, startup, and explicit status requests.
+- Docker and PostgreSQL cannot share a transaction. Cleanup compensates for ordinary failures; abrupt process/machine crashes or ambiguous commits can require manual resource cleanup. Successful image tags and Docker build cache are retained.
+
+## Future roadmap — NOT YET IMPLEMENTED
+
+Possible future milestones include application environment-variable configuration, source redeployment, authentication/private repository access, background workers and scheduling, monitoring, and scaling/load balancing. Redis, autoscaling, and Kubernetes are not implemented. These are ideas, not current capabilities or delivery commitments.

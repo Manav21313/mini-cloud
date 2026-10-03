@@ -14,7 +14,9 @@
     "premigrate": "npm run build",
     "migrate": "node dist/database/migrate.js",
     "test:persistence": "npm run build && node tests/persistence.cjs",
-    "test:source": "npm run build && node tests/source-deployment.cjs"
+    "test:source": "npm run build && node tests/source-deployment.cjs",
+    "test:projects": "npm run build && node --test tests/projects.cjs",
+    "test:auto": "npm run build && node tests/auto-deployment.cjs"
   },
   "dependencies": {
     "dockerode": "^4.0.7",

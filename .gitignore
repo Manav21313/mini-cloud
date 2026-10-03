@@ -30,7 +30,7 @@ pnpm-debug.log*
 
 # Local editor settings and temporary files
 .idea/
-.vscode/*.local.json
+.vscode/
 *.sublime-workspace
 *.swp
 *.swo
@@ -38,3 +38,25 @@ pnpm-debug.log*
 *.tmp
 *.temp
 *.bak
+
+# Local database files and backups (SQL migrations remain tracked)
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.sqlite-wal
+*.sqlite-shm
+*.dump
+/pgdata/
+/postgres-data/
+
+# Local runtime artifacts
+*.pid
+*.pid.lock
+*.sock
+
+# MiniCloud disposable checkouts/test fixtures (normally in the system temp dir)
+minicloud-build-*/
+minicloud-project-test-*/
+
+*.sublime-project
