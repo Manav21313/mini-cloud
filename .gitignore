@@ -1,0 +1,40 @@
+# Environment files and secrets (keep the shared template visible)
+.env
+.env.*
+*.env
+*.env.*
+!.env.example
+
+# Node.js dependencies
+node_modules/
+
+# TypeScript and build output
+dist/
+build/
+*.tsbuildinfo
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# macOS metadata
+.DS_Store
+._*
+
+# Local editor settings and temporary files
+.idea/
+.vscode/*.local.json
+*.sublime-workspace
+*.swp
+*.swo
+*~
+*.tmp
+*.temp
+*.bak

@@ -1,22 +1,14 @@
+import { sampleApplication } from "./database/config.js";
+import { migrate, pool } from "./database/connection.js";
 import { createReadStream } from "node:fs";
 import { IncomingMessage, createServer, ServerResponse } from "node:http";
 import { resolve } from "node:path";
 import { Application, ApplicationRegistry, NewApplication, RegistryError } from "./applications/registry.js";
 import { DockerControl } from "./docker/control.js";
 
-const sampleApplication: Application = {
-  id: "minicloud-sample",
-  name: "MiniCloud Sample",
-  image: process.env.MINICLOUD_IMAGE ?? "minicloud-sample",
-  containerName: process.env.MINICLOUD_CONTAINER ?? "minicloud-sample",
-  containerPort: 3000,
-  hostPort: Number(process.env.MINICLOUD_PORT ?? "3000"),
-  status: "unknown"
-};
-
-const registry = new ApplicationRegistry([sampleApplication]);
+const registry = new ApplicationRegistry();
 const port = Number(process.env.CONTROL_PLANE_PORT ?? "8080");
-const dashboardPath = resolve(process.cwd(), "public", "index.html");
+const dashboardPath = resolve(__dirname, "..", "public", "index.html");
 
 function json(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
@@ -64,16 +56,16 @@ async function runAction(application: Application, action: string): Promise<unkn
     if (action === "logs") return { application, logs: await control.logs() };
     if (action === "status") {
       const status = await control.status();
-      registry.setStatus(application.id, status.state);
+      Object.assign(application, await registry.setStatus(application.id, status.state));
       return { application, status };
     }
     if (action === "deploy" || action === "stop" || action === "restart") {
       const result = await control[action]();
-      registry.setStatus(application.id, result.status.state);
+      Object.assign(application, await registry.setStatus(application.id, result.status.state));
       return { application, ...result };
     }
   } catch (error) {
-    registry.setStatus(application.id, "error");
+    await registry.setStatus(application.id, "error");
     throw error;
   }
   throw new RegistryError("Route not found", 404);
@@ -89,20 +81,20 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    if (request.method === "GET" && url.pathname === "/api/apps") return json(response, 200, registry.list());
+    if (request.method === "GET" && url.pathname === "/api/apps") return json(response, 200, await registry.list());
     if (request.method === "POST" && url.pathname === "/api/apps") {
-      const application = registry.create(newApplication(await readJson(request)));
+      const application = await registry.create(newApplication(await readJson(request)));
       return json(response, 201, application);
     }
 
     const appRoute = url.pathname.match(/^\/api\/apps\/([^/]+)(?:\/([^/]+))?$/);
     if (appRoute) {
-      const application = registry.require(decodeURIComponent(appRoute[1]));
+      const application = await registry.require(decodeURIComponent(appRoute[1]));
       const action = appRoute[2];
       if (request.method === "GET" && !action) return json(response, 200, application);
       if (request.method === "DELETE" && !action) {
         await controlFor(application).remove();
-        registry.delete(application.id);
+        await registry.delete(application.id);
         return json(response, 200, { message: `${application.name} deleted.` });
       }
       if ((request.method === "POST" && ["deploy", "stop", "restart"].includes(action)) ||
@@ -115,7 +107,7 @@ const server = createServer(async (request, response) => {
     const legacyAction = url.pathname.slice(1);
     if ((request.method === "POST" && ["deploy", "stop", "restart"].includes(legacyAction)) ||
         (request.method === "GET" && ["status", "logs"].includes(legacyAction))) {
-      const application = registry.require(sampleApplication.id);
+      const application = await registry.require(sampleApplication.id);
       const result = await runAction(application, legacyAction) as Record<string, unknown>;
       if (legacyAction === "logs") return json(response, 200, { logs: result.logs });
       if (legacyAction === "status") return json(response, 200, result.status);
@@ -130,6 +122,44 @@ const server = createServer(async (request, response) => {
   }
 });
 
-server.listen(port, "127.0.0.1", () => {
-  console.log(`MiniCloud dashboard: http://localhost:${port}`);
+async function start(): Promise<void> {
+  await migrate();
+  const applications = await registry.list();
+  for (const application of applications) {
+    try {
+      const status = await controlFor(application).status();
+      await registry.setStatus(application.id, status.state);
+    } catch (error) {
+      // A failed Docker inspection is not evidence that the container is stopped.
+      await registry.setStatus(application.id, "unknown");
+      console.error(`Could not inspect ${application.containerName}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  server.listen(port, "127.0.0.1", () => {
+    console.log(`MiniCloud dashboard: http://localhost:${port}`);
+  });
+}
+
+let closing = false;
+function shutdown(): void {
+  if (closing) return;
+  closing = true;
+  server.close(() => {
+    pool.end().catch((error: unknown) => {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exitCode = 1;
+    });
+  });
+}
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
+server.on("error", (error) => {
+  console.error(`Control-plane error: ${error.message}`);
+  process.exitCode = 1;
+  shutdown();
+});
+start().catch(async (error: unknown) => {
+  console.error(`Control-plane startup failed: ${error instanceof Error ? error.message : String(error)}`);
+  await pool.end();
+  process.exitCode = 1;
 });
